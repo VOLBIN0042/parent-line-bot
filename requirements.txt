@@ -4,3 +4,4 @@ openai>=2.0,<3.0
 python-dotenv>=1.0,<2.0
 gunicorn>=23.0,<24.0; sys_platform != "win32"
 tzdata>=2025.1
+opencc-python-reimplemented>=0.1.7,<0.2

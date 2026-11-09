@@ -85,6 +85,26 @@ LINE 若重送事件，固定 retry key 可降低重複 Push，但 FAQ／AI 回�
 測試使用真實 SDK 的事件解析與簽章驗證，LINE/OpenAI 網路呼叫以 mock 取代，不會傳送訊息或消耗 API 額度。
 實際整合仍需填入有效金鑰，在 LINE 與 Render 環境驗證。
 
+## 設備手冊知識庫
+
+在 LINE 輸入 `GA700 單位設定`、`GA700 o1-03` 或 `查手冊 GA700 自訂單位`。
+Bot 先依型號、參數編號與繁簡中文關鍵字查找段落，再交給 AI 整理並附 PDF 頁碼。
+缺少相關資料時會請你補充問題。AI 服務暫時無法使用時，會回傳手冊原文節錄與頁碼。
+家長 FAQ 仍可照原本方式使用。
+
+要一次加入多份 PDF，將全部可公開的手冊放進同一個資料夾，或將多個檔案路徑一起傳給腳本。
+檔名建議包含型號，例如 `GA700技術手冊.pdf`。沒有型號的手冊可以用 `查手冊` 加關鍵字搜尋。
+
+```powershell
+uv pip install --python .venv\Scripts\python.exe pymupdf
+.\.venv\Scripts\python.exe build_manual_index.py 'D:\手冊資料夾'
+```
+
+腳本會從所有輸入重新產生 `manuals.json.gz`，因此保留舊手冊時也要一併傳入。
+整份掃描型 PDF 請先做 OCR。含表格或圖片的章節請抽查索引內容是否保留必要條件。
+部署時只需提供索引檔。索引內含手冊文字，因此公開儲存庫只適合存放可公開的資料。
+更新索引後，推送到 GitHub，再從 Render 的 **Manual Deploy → Deploy latest commit** 部署。
+
 ## 官方參考
 
 - [LINE Python SDK v3](https://github.com/line/line-bot-sdk-python)

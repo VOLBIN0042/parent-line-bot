@@ -51,6 +51,29 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(params["model"], "gpt-5.5")
         self.assertFalse(params["store"])
 
+    def test_ga700_manual_reply_uses_parameter_sections_and_pages(self):
+        self.ai.responses.create.return_value.output_text = "頻率顯示用 o1-03 [1]。"
+        self.assertEqual(self.send("GA700單位設定").status_code, 200)
+        request = self.ai.responses.create.call_args.kwargs
+        passages = json.loads(request["input"])["passages"]
+        self.assertTrue(any(p["page"] == 416 and p["text"].startswith("■o1-03") for p in passages))
+        self.assertTrue(any(p["page"] == 417 and p["text"].startswith("■o1-04") for p in passages))
+        self.assertIn("PDF 第 416 頁", self.text())
+        self.line.push_message.assert_not_called()
+
+    def test_manual_no_match_never_asks_ai_to_guess(self):
+        for message in ("GA700 世界盃冠軍", "查手冊 GA500 單位設定"):
+            self.assertEqual(self.send(message).status_code, 200)
+            self.assertIn("手冊未找到", self.text())
+        self.ai.responses.create.assert_not_called()
+
+    def test_manual_reply_shows_source_excerpt_when_ai_is_unavailable(self):
+        self.ai.responses.create.side_effect = RuntimeError("simulated")
+        self.assertEqual(self.send("GA700 o1-03").status_code, 200)
+        self.assertIn("手冊原文節錄", self.text())
+        self.assertIn("PDF 第 416 頁", self.text())
+        self.assertIn("PDF 第 417 頁", self.text())
+
     def test_sensitive_precedes_faq_and_has_two_paths(self):
         self.assertEqual(self.send("因霸凌想死，明天請假").status_code, 200)
         notice = self.line.push_message.call_args.args[0]

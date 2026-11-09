@@ -17,6 +17,8 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from openai import OpenAI
 
+from manuals import MANUAL_INSTRUCTIONS, ManualIndex, manual_excerpt, manual_input, manual_sources
+
 FAQ = (
     (("請假", "病假", "事假"), "請假流程：請於早上 8 點前在 LINE 群組留言，並補交假單。"),
     (("段考", "考試時程"), "段考時程：請見班級行事曆。"),
@@ -73,6 +75,7 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
     ai = ai_client if ai_client is not None else OpenAI(
         api_key=config["OPENAI_API_KEY"], timeout=15.0, max_retries=0
     )
+    manuals = ManualIndex()
 
     def reply(event, text):
         line.reply_message(ReplyMessageRequest(
@@ -82,7 +85,12 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
     @handler.add(MessageEvent, message=TextMessageContent)
     def handle_message(event):
         message = event.message.text
-        if any(word in normalize(message) for word in SENSITIVE_KEYWORDS):
+        manual_query = manuals.request(message)
+        sensitive_text = normalize(message)
+        if manual_query is not None:
+            for technical_term in ("緊急停止", "紧急停止", "緊急停機", "紧急停机"):
+                sensitive_text = sensitive_text.replace(technical_term, "")
+        if any(word in sensitive_text for word in SENSITIVE_KEYWORDS):
             notified = False
             stamp = datetime.fromtimestamp(event.timestamp / 1000, ZoneInfo("Asia/Taipei")).isoformat()
             user_id = getattr(event.source, "user_id", None) or "（事件未提供 user ID）"
@@ -103,21 +111,29 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
             contact = "\n緊急聯絡：[班導手機]" if "緊急聯絡" in normalize(message) else ""
             reply(event, "謝謝您告訴我，我們很重視您與孩子的安全。" + status + contact + "\n" + SUPPORT)
             return
-        answer = faq_answer(message)
+        passages = manuals.search(*manual_query) if manual_query is not None else []
+        if manual_query is not None and not passages:
+            reply(event, "手冊未找到足夠資料，請補充設備型號、參數編號或要查的功能。")
+            return
+        answer = faq_answer(message) if manual_query is None else None
         if answer is None:
             try:
                 response = ai.responses.create(
                     model=config.get("OPENAI_MODEL", "gpt-5.5"),
-                    instructions=AI_INSTRUCTIONS, input=message,
-                    max_output_tokens=800, store=False,
+                    instructions=MANUAL_INSTRUCTIONS if passages else AI_INSTRUCTIONS,
+                    input=manual_input(message, passages) if passages else message,
+                    max_output_tokens=1200 if passages else 800, store=False,
                 )
                 generated = response.output_text.strip()
                 if not generated:
                     raise ValueError("empty response")
                 answer = "以下為 AI 回覆\n" + generated
+                if passages:
+                    answer += "\n\n查閱段落\n" + manual_sources(passages)
             except Exception as exc:
                 logger.error("AI 回覆失敗：%s", type(exc).__name__)
-                answer = "目前 AI 助理暫時無法回覆，請稍後再試，或直接詢問班導。"
+                answer = (manual_excerpt(passages) if passages else
+                          "目前 AI 助理暫時無法回覆，請稍後再試，或直接詢問班導。")
         reply(event, answer)
 
     @app.get("/healthz")
