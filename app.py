@@ -10,7 +10,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from flask import Flask, abort, request, send_file, url_for
+from flask import Flask, abort, redirect, request, send_file, url_for
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -24,6 +24,7 @@ from manuals import (
     CONTACT_QUERY, MANUAL_INSTRUCTIONS, ManualIndex, contact_reply,
     manual_excerpt, manual_input, manual_sources,
 )
+from pcloud_files import PublicFiles
 
 FAQ = (
     (("請假", "病假", "事假"), "請假流程：請於早上 8 點前在 LINE 群組留言，並補交假單。"),
@@ -33,10 +34,15 @@ FAQ = (
     (("學費", "繳費", "銀行帳號"), "學費繳交：[銀行帳號]"),
 )
 SENSITIVE_KEYWORDS = ("霸凌", "自殺", "自伤", "自傷", "被打", "不想活", "想死", "緊急", "紧急")
-VB1114_MANUAL_NAME = "VB-1114RF 遙控器說明書"
-VB1114_MANUAL_REQUEST = re.compile(
-    r"(?:請給我?|給我?|下載|索取)?vb-?1114(?:rf)?(?:遙控器)?(?:說明書|手冊)[?。!]?"
+PUBLIC_MANUALS = {
+    "vb-1114rf": "VB-1114RF 遙控器說明書",
+    "vb-6ad": "VB-6AD 說明書",
+}
+MANUAL_MODEL_ALIASES = {"vb1114": "vb-1114rf"}
+MANUAL_DOWNLOAD_REQUEST = re.compile(
+    r"(?:請給我?|給我?|下載|索取)?([a-z]+[‐‑–−-]?\d+[a-z0-9]*)(?:遙控器)?(?:說明書|手冊)[?。!]?"
 )
+FILE_DOWNLOAD_REQUEST = re.compile(r"^\s*(?:找檔案|下載檔案|找文件|下載文件)\s*[:：]?\s*(.+?)\s*$")
 AI_INSTRUCTIONS = """你是班級家長 FAQ 助理，一律使用繁體中文、台灣用語，溫和且簡潔。
 下列是唯一已知的班級資訊：
 請假流程：8 點前 LINE 群留言+補假單
@@ -86,6 +92,9 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
         api_key=config["OPENAI_API_KEY"], timeout=15.0, max_retries=0
     )
     manuals = ManualIndex()
+    pcloud_link = config.get("PCLOUD_PUBLIC_LINK", "").strip()
+    public_files = PublicFiles(pcloud_link) if pcloud_link else None
+    public_base = config.get("RENDER_EXTERNAL_URL", "").rstrip("/")
     directory_path = Path(config.get("CONTACT_DIRECTORY_FILE", "/etc/secrets/company-contacts.json"))
     contacts = []
     if directory_path.is_file():
@@ -101,15 +110,51 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
             reply_token=event.reply_token, messages=[TextMessage(text=line_text(text))]
         ), _request_timeout=8)
 
+    def public_manual_path(model):
+        return Path(app.root_path) / "public_manuals" / f"{model}.pdf"
+
+    def public_url(endpoint, **params):
+        if public_base:
+            return public_base + url_for(endpoint, **params)
+        return url_for(endpoint, _external=True, **params)
+
     @handler.add(MessageEvent, message=TextMessageContent)
     def handle_message(event):
         message = event.message.text
         sensitive_text = normalize(message)
-        if VB1114_MANUAL_REQUEST.fullmatch(sensitive_text):
-            path = url_for("download_vb1114_manual")
-            base = config.get("RENDER_EXTERNAL_URL", "").rstrip("/")
-            link = base + path if base else url_for("download_vb1114_manual", _external=True)
-            reply(event, f"{VB1114_MANUAL_NAME}（PDF）\n{link}")
+        manual_download = MANUAL_DOWNLOAD_REQUEST.fullmatch(sensitive_text)
+        if manual_download:
+            model_key = manual_download[1].translate(str.maketrans("", "", "‐‑–−-"))
+            model = MANUAL_MODEL_ALIASES.get(model_key) or next(
+                (listed for listed in PUBLIC_MANUALS if listed.replace("-", "") == model_key), None
+            )
+            if model and (model == "vb-1114rf" or public_files is None):
+                if public_manual_path(model).is_file():
+                    link = public_url("download_manual", model=model)
+                    reply(event, f"{PUBLIC_MANUALS[model]}（PDF）\n{link}")
+                    return
+        file_download = FILE_DOWNLOAD_REQUEST.fullmatch(message)
+        if file_download or (manual_download and public_files):
+            if public_files is None:
+                reply(event, "pCloud 檔案下載目前尚未開放。")
+                return
+            query = file_download[1] if file_download else manual_download[1]
+            try:
+                matches = public_files.search(query, manual=file_download is None)
+            except (OSError, ValueError, KeyError, TypeError) as exc:
+                logger.warning("pCloud 檔案查詢失敗：%s", type(exc).__name__)
+                reply(event, "目前無法讀取 pCloud 檔案清單，請稍後再試。")
+                return
+            if not matches:
+                reply(event, "找不到符合的檔案，請試試完整檔名或更精確的型號。")
+                return
+            links = [
+                f"{path}\n{public_url('download_pcloud_file', file_id=file_id)}"
+                for file_id, path in matches[:5]
+            ]
+            if len(matches) > 5:
+                links.append("還有其他符合的檔案，請用完整檔名或子資料夾路徑縮小範圍。")
+            reply(event, "\n\n".join(links))
             return
         manual_query = manuals.request(message)
         if manual_query is not None:
@@ -174,14 +219,30 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
     def health():
         return {"status": "ok"}
 
-    @app.get("/downloads/vb-1114rf.pdf")
-    def download_vb1114_manual():
+    @app.get("/downloads/<model>.pdf")
+    def download_manual(model):
+        if model not in PUBLIC_MANUALS:
+            abort(404)
+        path = public_manual_path(model)
+        if not path.is_file():
+            abort(404)
         return send_file(
-            Path(app.root_path) / "public_manuals" / "vb-1114rf.pdf",
+            path,
             mimetype="application/pdf",
             as_attachment=True,
-            download_name=f"{VB1114_MANUAL_NAME}.pdf",
+            download_name=f"{PUBLIC_MANUALS[model]}.pdf",
         )
+
+    @app.get("/files/<int:file_id>")
+    def download_pcloud_file(file_id):
+        if public_files is None:
+            abort(404)
+        try:
+            link = public_files.download_url(file_id)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            logger.warning("pCloud 檔案下載失敗：%s", type(exc).__name__)
+            abort(404)
+        return redirect(link)
 
     @app.post("/webhook")
     def webhook():
