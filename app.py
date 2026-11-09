@@ -42,6 +42,11 @@ PUBLIC_MANUALS = {
     "vb-6ad": "VB-6AD 說明書",
 }
 MANUAL_MODEL_ALIASES = {"vb1114": "vb-1114rf"}
+VB1114RF_MODEL = re.compile(r"(?<![a-z0-9])vb[-‐‑–−]?1114rf(?![a-z0-9])")
+VB1114RF_STATION = re.compile(r"(?:站號|站号|站|id)[:：#]?(\d{1,3})(?!\d)|(?<!\d)(\d{1,3})(?:號站|号站|站)")
+# 第 3 頁「遙控器按鈕位址」表依 ID 順序列出，長度均為 1。
+VB1114RF_READ_POINTS = ("WS512", "WS528", "WS576", "WS592", "WS608", "WS624",
+                        "WS640", "WS656", "WS672", "WS688", "WS704", "WS720")
 MANUAL_DOWNLOAD_REQUEST = re.compile(
     r"(?:請給我?|給我?|下載|索取)?([a-z]+[‐‑–−-]?\d+[a-z0-9]*)(?:遙控器)?(?:說明書|手冊)[?。!]?"
 )
@@ -184,6 +189,33 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
             status = "我已通知班導，老師會盡快聯繫您。" if notified else "目前無法確認班導已收到通知，請您直接電話聯繫班導。"
             contact = "\n緊急聯絡：[班導手機]" if "緊急聯絡" in normalize(message) else ""
             reply(event, "謝謝您告訴我，我們很重視您與孩子的安全。" + status + contact + "\n" + SUPPORT)
+            return
+        if VB1114RF_MODEL.search(unicodedata.normalize("NFKC", message).casefold()) and any(
+            term in sensitive_text for term in ("讀取", "读取", "點位", "点位", "位址", "地址")
+        ):
+            stations = list(VB1114RF_STATION.finditer(sensitive_text))
+            if len(stations) != 1:
+                reply(event, "請提供一個要查詢的 VB-1114RF 站號，例如「VB-1114RF 站號1 讀取點位」。")
+                return
+            station = int(stations[0][1] or stations[0][2])
+            source = public_url("download_manual", model="vb-1114rf", _anchor="page=3")
+            if "外叫" in sensitive_text or "面板" in sensitive_text:
+                if station == 1:
+                    answer = "VB-1114RF 說明書第 4 頁的站號 1 範例中，外叫面板下方按鈕的讀取點位是 S736，資料長度 4。"
+                    source = public_url("download_manual", model="vb-1114rf", _anchor="page=4")
+                else:
+                    answer = f"VB-1114RF 說明書未列出站號 {station} 的外叫面板讀取點位。第 4 頁提供站號 1 範例。"
+                    source = public_url("download_manual", model="vb-1114rf", _anchor="page=4")
+            elif 1 <= station <= len(VB1114RF_READ_POINTS):
+                answer = (f"VB-1114RF 站號 {station} 的遙控器按鈕讀取點位是 "
+                          f"{VB1114RF_READ_POINTS[station - 1]}，資料長度 1（第 3 頁）。")
+                if station == 1:
+                    answer += "\n第 4 頁另列外叫面板下方按鈕的讀取點位 S736，資料長度 4。"
+                if station > 8:
+                    answer += "\n這是表格列出的位址。說明書標示最多可使用 8 站，請依現場配置確認。"
+            else:
+                answer = f"VB-1114RF 說明書第 3 頁未列出站號 {station} 的遙控器按鈕讀取點位。"
+            reply(event, f"{answer}\n{source}")
             return
         answer = faq_answer(message) if manual_query is None else None
         lookup = CONTACT_QUERY.fullmatch(message.strip()) if answer is None else None
