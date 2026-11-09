@@ -7,10 +7,13 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime
+from urllib.error import HTTPError
+from urllib.parse import quote, unquote, urlsplit
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from flask import Flask, abort, redirect, request, send_file, url_for
+from flask import Flask, Response, abort, request, send_file, url_for
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -242,7 +245,35 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
         except (OSError, ValueError, KeyError, TypeError) as exc:
             logger.warning("pCloud 檔案下載失敗：%s", type(exc).__name__)
             abort(404)
-        return redirect(link)
+        headers = {}
+        if request.range and request.range.units == "bytes" and len(request.range.ranges) == 1:
+            headers["Range"] = request.headers["Range"]
+        try:
+            upstream = urlopen(Request(link, headers=headers), timeout=20)
+        except HTTPError as exc:
+            if exc.code == 416:
+                return Response(status=416, headers={"Content-Range": exc.headers.get("Content-Range", "")})
+            logger.warning("pCloud 檔案來源回傳 HTTP %s", exc.code)
+            abort(502)
+        except OSError as exc:
+            logger.warning("pCloud 檔案讀取失敗：%s", type(exc).__name__)
+            abort(502)
+
+        def chunks():
+            with upstream:
+                while chunk := upstream.read(128 * 1024):
+                    yield chunk
+
+        filename = unquote(urlsplit(link).path.rsplit("/", 1)[-1])
+        response = Response(chunks(), status=upstream.status, mimetype="application/octet-stream")
+        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+        response.headers["Cache-Control"] = "private, no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        for header in ("Content-Length", "Content-Range", "Accept-Ranges"):
+            if header in upstream.headers:
+                response.headers[header] = upstream.headers[header]
+        response.call_on_close(upstream.close)
+        return response
 
     @app.post("/webhook")
     def webhook():
