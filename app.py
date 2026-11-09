@@ -117,6 +117,7 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
         return Path(app.root_path) / "public_manuals" / f"{model}.pdf"
 
     def public_url(endpoint, **params):
+        params["openExternalBrowser"] = "1"
         if public_base:
             return public_base + url_for(endpoint, **params)
         return url_for(endpoint, _external=True, **params)
@@ -232,7 +233,7 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
         return send_file(
             path,
             mimetype="application/pdf",
-            as_attachment=True,
+            as_attachment=request.args.get("download") == "1",
             download_name=f"{PUBLIC_MANUALS[model]}.pdf",
         )
 
@@ -265,8 +266,11 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
                     yield chunk
 
         filename = unquote(urlsplit(link).path.rsplit("/", 1)[-1])
-        response = Response(chunks(), status=upstream.status, mimetype="application/octet-stream")
-        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{quote(filename, safe='')}"
+        is_pdf = filename.lower().endswith(".pdf")
+        disposition = "inline" if is_pdf and request.args.get("download") != "1" else "attachment"
+        mimetype = "application/pdf" if is_pdf else "application/octet-stream"
+        response = Response(chunks(), status=upstream.status, mimetype=mimetype)
+        response.headers["Content-Disposition"] = f"{disposition}; filename*=UTF-8''{quote(filename, safe='')}"
         response.headers["Cache-Control"] = "private, no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
         for header in ("Content-Length", "Content-Range", "Accept-Ranges"):
