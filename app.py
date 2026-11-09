@@ -3,13 +3,14 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import unicodedata
 import uuid
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
-from flask import Flask, abort, request
+from flask import Flask, abort, request, send_file, url_for
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -32,6 +33,10 @@ FAQ = (
     (("學費", "繳費", "銀行帳號"), "學費繳交：[銀行帳號]"),
 )
 SENSITIVE_KEYWORDS = ("霸凌", "自殺", "自伤", "自傷", "被打", "不想活", "想死", "緊急", "紧急")
+VB1114_MANUAL_NAME = "VB-1114RF 遙控器說明書"
+VB1114_MANUAL_REQUEST = re.compile(
+    r"(?:請給我?|給我?|下載|索取)?vb-?1114(?:rf)?(?:遙控器)?(?:說明書|手冊)[?。!]?"
+)
 AI_INSTRUCTIONS = """你是班級家長 FAQ 助理，一律使用繁體中文、台灣用語，溫和且簡潔。
 下列是唯一已知的班級資訊：
 請假流程：8 點前 LINE 群留言+補假單
@@ -99,8 +104,14 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
     @handler.add(MessageEvent, message=TextMessageContent)
     def handle_message(event):
         message = event.message.text
-        manual_query = manuals.request(message)
         sensitive_text = normalize(message)
+        if VB1114_MANUAL_REQUEST.fullmatch(sensitive_text):
+            path = url_for("download_vb1114_manual")
+            base = config.get("RENDER_EXTERNAL_URL", "").rstrip("/")
+            link = base + path if base else url_for("download_vb1114_manual", _external=True)
+            reply(event, f"{VB1114_MANUAL_NAME}（PDF）\n{link}")
+            return
+        manual_query = manuals.request(message)
         if manual_query is not None:
             for technical_term in ("緊急停止", "紧急停止", "緊急停機", "紧急停机"):
                 sensitive_text = sensitive_text.replace(technical_term, "")
@@ -162,6 +173,15 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
     @app.get("/healthz")
     def health():
         return {"status": "ok"}
+
+    @app.get("/downloads/vb-1114rf.pdf")
+    def download_vb1114_manual():
+        return send_file(
+            Path(app.root_path) / "public_manuals" / "vb-1114rf.pdf",
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"{VB1114_MANUAL_NAME}.pdf",
+        )
 
     @app.post("/webhook")
     def webhook():
