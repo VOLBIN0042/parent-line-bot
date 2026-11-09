@@ -1,6 +1,8 @@
 """家長 FAQ LINE Bot：LINE SDK v3 + OpenAI Responses API。"""
+import json
 import logging
 import os
+from pathlib import Path
 import unicodedata
 import uuid
 from datetime import datetime
@@ -17,7 +19,10 @@ from linebot.v3.messaging import (
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from openai import OpenAI
 
-from manuals import MANUAL_INSTRUCTIONS, ManualIndex, manual_excerpt, manual_input, manual_sources
+from manuals import (
+    CONTACT_QUERY, MANUAL_INSTRUCTIONS, ManualIndex, contact_reply,
+    manual_excerpt, manual_input, manual_sources,
+)
 
 FAQ = (
     (("請假", "病假", "事假"), "請假流程：請於早上 8 點前在 LINE 群組留言，並補交假單。"),
@@ -76,6 +81,15 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
         api_key=config["OPENAI_API_KEY"], timeout=15.0, max_retries=0
     )
     manuals = ManualIndex()
+    directory_path = Path(config.get("CONTACT_DIRECTORY_FILE", "/etc/secrets/company-contacts.json"))
+    contacts = []
+    if directory_path.is_file():
+        try:
+            data = json.loads(directory_path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                contacts = data
+        except (OSError, ValueError):
+            logger.error("無法載入公司通訊錄")
 
     def reply(event, text):
         line.reply_message(ReplyMessageRequest(
@@ -111,11 +125,20 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
             contact = "\n緊急聯絡：[班導手機]" if "緊急聯絡" in normalize(message) else ""
             reply(event, "謝謝您告訴我，我們很重視您與孩子的安全。" + status + contact + "\n" + SUPPORT)
             return
+        answer = faq_answer(message) if manual_query is None else None
+        lookup = CONTACT_QUERY.fullmatch(message.strip()) if answer is None else None
+        if lookup:
+            if getattr(event.source, "type", None) != "user":
+                reply(event, "請在與 Bot 的一對一聊天室查詢公司通訊錄。")
+            elif not contacts:
+                reply(event, "公司通訊錄目前尚未開放查詢。")
+            else:
+                reply(event, contact_reply(contacts, *lookup.groups()))
+            return
         passages = manuals.search(*manual_query) if manual_query is not None else []
         if manual_query is not None and not passages:
             reply(event, "手冊未找到足夠資料，請補充設備型號、參數編號或要查的功能。")
             return
-        answer = faq_answer(message) if manual_query is None else None
         if answer is None:
             try:
                 response = ai.responses.create(

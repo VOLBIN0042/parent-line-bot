@@ -4,7 +4,7 @@ import hmac
 import json
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app import create_app, line_text
 
@@ -14,16 +14,19 @@ class WebhookTests(unittest.TestCase):
         self.line = MagicMock()
         self.ai = MagicMock()
         self.ai.responses.create.return_value = SimpleNamespace(output_text="請與班導討論。")
-        self.client = create_app({
+        self.client = self.make_client()
+
+    def make_client(self):
+        return create_app({
             "LINE_CHANNEL_ACCESS_TOKEN": "test-token", "LINE_CHANNEL_SECRET": "test-secret",
             "OPENAI_API_KEY": "test-key", "TEACHER_LINE_ID": "Uteacher",
             "OPENAI_MODEL": "gpt-5.5",
         }, self.line, self.ai).test_client()
 
-    def send(self, message=None, signature=None):
+    def send(self, message=None, signature=None, source=None):
         events = [] if message is None else [{
             "type": "message", "message": {"type": "text", "id": "123", "text": message, "quoteToken": "quote-token"},
-            "timestamp": 1793923200000, "source": {"type": "user", "userId": "Uparent"},
+            "timestamp": 1793923200000, "source": source or {"type": "user", "userId": "Uparent"},
             "replyToken": "reply-token", "webhookEventId": "event-123",
             "deliveryContext": {"isRedelivery": False}, "mode": "active",
         }]
@@ -51,13 +54,30 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(params["model"], "gpt-5.5")
         self.assertFalse(params["store"])
 
+    def test_company_contact_in_direct_chat_and_group(self):
+        records = [{"source": "0001_公司電話/2026 11月手機簡碼.xls", "location": "工作表 總表",
+                    "text": "第 1 列：測試員 | 0900-000-001 | 2001 | 其他人 | 0900-000-002 | 2002"}]
+        with patch('app.Path') as path:
+            path.return_value.is_file.return_value = True
+            path.return_value.read_text.return_value = json.dumps(records)
+            self.client = self.make_client()
+        self.assertEqual(self.send("測試員電話").status_code, 200)
+        self.assertIn("0900-000-001", self.text())
+        self.assertIn("2001", self.text())
+        self.assertNotIn("0900-000-002", self.text())
+        self.assertEqual(self.send("測試員電話", source={"type": "group", "userId": "Uparent", "groupId": "Ctest"}).status_code, 200)
+        self.assertIn("一對一聊天室", self.text())
+        self.assertNotIn("0900-000-001", self.text())
+        self.ai.responses.create.assert_not_called()
+
     def test_ga700_manual_reply_uses_parameter_sections_and_pages(self):
         self.ai.responses.create.return_value.output_text = "頻率顯示用 o1-03 [1]。"
-        self.assertEqual(self.send("GA700單位設定").status_code, 200)
+        self.assertEqual(self.send("GA700 頻率單位設定參數").status_code, 200)
         request = self.ai.responses.create.call_args.kwargs
         passages = json.loads(request["input"])["passages"]
-        self.assertTrue(any(p["page"] == 416 and p["text"].startswith("■o1-03") for p in passages))
-        self.assertTrue(any(p["page"] == 417 and p["text"].startswith("■o1-04") for p in passages))
+        self.assertEqual([p["page"] for p in passages], [416, 417, 417])
+        self.assertTrue(passages[0]["text"].startswith("■o1-03"))
+        self.assertTrue(passages[1]["text"].startswith("■o1-04"))
         self.assertIn("PDF 第 416 頁", self.text())
         self.line.push_message.assert_not_called()
 
