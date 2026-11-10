@@ -1,4 +1,4 @@
-"""家長 FAQ LINE Bot：LINE SDK v3 + OpenAI Responses API。"""
+"""家長 FAQ LINE Bot：LINE SDK v3 + Groq Responses API。"""
 import json
 import logging
 import os
@@ -85,7 +85,7 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
     config = dict(os.environ)
     if settings:
         config.update(settings)
-    required = ("LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "OPENAI_API_KEY", "TEACHER_LINE_ID")
+    required = ("LINE_CHANNEL_ACCESS_TOKEN", "LINE_CHANNEL_SECRET", "GROQ_API_KEY", "TEACHER_LINE_ID")
     missing = [key for key in required if not config.get(key, "").strip()]
     if missing:
         raise RuntimeError("尚未設定環境變數：" + ", ".join(missing))
@@ -97,8 +97,11 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
         ApiClient(Configuration(access_token=config["LINE_CHANNEL_ACCESS_TOKEN"]))
     )
     ai = ai_client if ai_client is not None else OpenAI(
-        api_key=config["OPENAI_API_KEY"], timeout=15.0, max_retries=0
+        api_key=config["GROQ_API_KEY"],
+        base_url="https://api.groq.com/openai/v1",
+        timeout=15.0, max_retries=0,
     )
+    ai_model = config.get("GROQ_MODEL", "").strip() or "openai/gpt-oss-120b"
     manuals = ManualIndex()
     pcloud_link = config.get("PCLOUD_PUBLIC_LINK", "").strip()
     public_files = PublicFiles(pcloud_link) if pcloud_link else None
@@ -234,7 +237,7 @@ def create_app(settings=None, messaging_api=None, ai_client=None):
         if answer is None:
             try:
                 response = ai.responses.create(
-                    model=config.get("OPENAI_MODEL", "gpt-5.5"),
+                    model=ai_model,
                     instructions=MANUAL_INSTRUCTIONS if passages else AI_INSTRUCTIONS,
                     input=manual_input(message, passages) if passages else message,
                     max_output_tokens=1200 if passages else 800, store=False,

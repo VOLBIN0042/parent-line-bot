@@ -13,9 +13,9 @@ services:
         sync: false
       - key: LINE_CHANNEL_SECRET
         sync: false
-      - key: OPENAI_API_KEY
+      - key: GROQ_API_KEY
         sync: false
       - key: TEACHER_LINE_ID
         sync: false
-      - key: OPENAI_MODEL
-        value: gpt-5.5
+      - key: GROQ_MODEL
+        value: openai/gpt-oss-120b

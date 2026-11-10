@@ -19,8 +19,8 @@ class WebhookTests(unittest.TestCase):
     def make_client(self):
         return create_app({
             "LINE_CHANNEL_ACCESS_TOKEN": "test-token", "LINE_CHANNEL_SECRET": "test-secret",
-            "OPENAI_API_KEY": "test-key", "TEACHER_LINE_ID": "Uteacher",
-            "OPENAI_MODEL": "gpt-5.5",
+            "GROQ_API_KEY": "test-key", "TEACHER_LINE_ID": "Uteacher",
+            "GROQ_MODEL": "",
         }, self.line, self.ai).test_client()
 
     def send(self, message=None, signature=None, source=None):
@@ -51,7 +51,7 @@ class WebhookTests(unittest.TestCase):
         self.assertEqual(self.send("孩子如何培養閱讀習慣？").status_code, 200)
         self.assertTrue(self.text().startswith("以下為 AI 回覆"))
         params = self.ai.responses.create.call_args.kwargs
-        self.assertEqual(params["model"], "gpt-5.5")
+        self.assertEqual(params["model"], "openai/gpt-oss-120b")
         self.assertFalse(params["store"])
 
     def test_company_contact_in_direct_chat_and_group(self):
